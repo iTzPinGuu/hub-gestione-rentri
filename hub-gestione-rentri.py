@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RENTRI Manager - Complete Edition with Certificate Management
-============================================================
+RENTRI Manager - Complete Edition with Certificate Management + Gestione FIR
+============================================================================
 Versione finale completa con:
 • Dashboard moderno con CustomTkinter
 • Gestione fornitori con ricerca
@@ -13,9 +13,10 @@ Versione finale completa con:
   - Crea lettera di consegna
   - Unisci FIR per stamparli
 • Credits con link LinkedIn
-• NUOVO: Avvio a schermo intero
+• NUOVO: Avvio a schermo intero (FIX cross-platform)
 • NUOVO: Progress window sempre in primo piano
 • NUOVO: Gestione certificato con date e aggiornamento
+• NUOVO: Sezione Gestione FIR con tabella e ricerca
 """
 
 import customtkinter as ctk
@@ -387,6 +388,17 @@ class RentriREST:
         except Exception as e:
             dbg(f"Errore parsing PDF: {e}")
             return False
+
+    def verify_fir_exists(self, numero_fir):
+        """Verifica l'esistenza di un numero FIR"""
+        try:
+            h = {"Authorization": f"Bearer {self._jwt_auth()}"}
+            r = self._call(requests.get, f"{BASE_URL}/vidimazione-formulari/v1.0/verifica/{numero_fir}",
+                           headers=h)
+            return r.json() if r.ok else None
+        except Exception as e:
+            dbg(f"Errore verifica FIR {numero_fir}: {e}")
+            return None
 
 class Worker(threading.Thread):
     def __init__(self, rest: RentriREST, blocco: str, quanti: int,
@@ -911,28 +923,659 @@ class PDFMergeView(ctk.CTkFrame):
         except queue.Empty:
             self.after_id = self.after(100, self.poll_queue)
 
+# NUOVA SEZIONE: Gestione FIR con tabella
+class FIRAnnullaView(ctk.CTkFrame):
+    """View per la gestione e ricerca FIR con tabella come nel portale RENTRI"""
+    def __init__(self, parent, rest_client=None):
+        super().__init__(parent)
+        self.rest = rest_client
+        self.current_fir_list = []
+        self.filtered_fir_list = []
+        
+        # Configure grid
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        
+        # Create UI
+        self.create_header()
+        self.create_search_section()
+        self.create_fir_table()
+        self.create_action_buttons()
+        
+        # Load FIR data if REST client available
+        if self.rest:
+            self.load_fir_data()
+    
+    def create_header(self):
+        """Crea la sezione header"""
+        header_frame = ctk.CTkFrame(self, height=80, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        header_frame.grid_columnconfigure(0, weight=1)
+        header_frame.grid_propagate(False)
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text="🗑️ Gestione e Ricerca FIR",
+            font=ctk.CTkFont(size=32, weight="bold"),
+            anchor="w"
+        )
+        title_label.grid(row=0, column=0, sticky="w", pady=20)
+        
+        refresh_btn = ctk.CTkButton(
+            header_frame,
+            text="🔄 Aggiorna Lista",
+            command=self.load_fir_data,
+            height=40,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        refresh_btn.grid(row=0, column=1, pady=20, padx=(20, 0))
+    
+    def create_search_section(self):
+        """Crea la sezione di ricerca"""
+        search_frame = ctk.CTkFrame(self)
+        search_frame.grid(row=1, column=0, sticky="ew", pady=(0, 20))
+        search_frame.grid_columnconfigure(1, weight=1)
+        
+        # Search label
+        search_label = ctk.CTkLabel(
+            search_frame,
+            text="Ricerca FIR:",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        search_label.grid(row=0, column=0, padx=(20, 10), pady=20, sticky="w")
+        
+        # Search entry
+        self.search_entry = ctk.CTkEntry(
+            search_frame,
+            placeholder_text="🔍 Inserisci numero FIR, codice blocco, o parte del numero...",
+            height=40,
+            font=ctk.CTkFont(size=14)
+        )
+        self.search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=20)
+        self.search_entry.bind("<KeyRelease>", self.on_search_change)
+        
+        # Clear search button
+        clear_btn = ctk.CTkButton(
+            search_frame,
+            text="✕",
+            command=self.clear_search,
+            width=40,
+            height=40,
+            fg_color="transparent",
+            hover_color="#e17055",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        clear_btn.grid(row=0, column=2, padx=(0, 20), pady=20)
+        
+        # Filter options
+        filter_frame = ctk.CTkFrame(search_frame, fg_color="transparent")
+        filter_frame.grid(row=1, column=0, columnspan=3, sticky="ew", padx=20, pady=(0, 20))
+        
+        # Block filter
+        block_label = ctk.CTkLabel(filter_frame, text="Blocco:", font=ctk.CTkFont(size=14))
+        block_label.grid(row=0, column=0, padx=(0, 10), sticky="w")
+        
+        self.block_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["Tutti i blocchi"],
+            command=self.on_filter_change,
+            width=200
+        )
+        self.block_filter.grid(row=0, column=1, padx=(0, 20))
+        
+        # Status filter
+        status_label = ctk.CTkLabel(filter_frame, text="Stato:", font=ctk.CTkFont(size=14))
+        status_label.grid(row=0, column=2, padx=(0, 10), sticky="w")
+        
+        self.status_filter = ctk.CTkComboBox(
+            filter_frame,
+            values=["Tutti", "Vidimato", "In uso", "Disponibile"],
+            command=self.on_filter_change,
+            width=150
+        )
+        self.status_filter.grid(row=0, column=3, padx=(0, 20))
+    
+    def create_fir_table(self):
+        """Crea la tabella dei FIR"""
+        # Table frame
+        table_frame = ctk.CTkFrame(self)
+        table_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 20))
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(1, weight=1)
+        
+        # Table header
+        header_frame = ctk.CTkFrame(table_frame, height=50)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
+        header_frame.grid_propagate(False)
+        
+        # Column headers
+        headers = ["Sel", "Numero FIR", "Blocco", "Progressivo", "Data Vidimazione", "Stato", "Azioni"]
+        col_weights = [1, 3, 2, 1, 2, 1, 2]
+        
+        for i, (header, weight) in enumerate(zip(headers, col_weights)):
+            header_frame.grid_columnconfigure(i, weight=weight)
+            label = ctk.CTkLabel(
+                header_frame,
+                text=header,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                anchor="center"
+            )
+            label.grid(row=0, column=i, padx=5, pady=10, sticky="ew")
+        
+        # Scrollable frame for FIR rows
+        self.fir_scroll_frame = ctk.CTkScrollableFrame(
+            table_frame,
+            label_text="Formulari FIR"
+        )
+        self.fir_scroll_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        self.fir_scroll_frame.grid_columnconfigure(0, weight=1)
+        
+        # Results info
+        self.results_label = ctk.CTkLabel(
+            table_frame,
+            text="Caricamento FIR in corso...",
+            font=ctk.CTkFont(size=12),
+            text_color="gray"
+        )
+        self.results_label.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="w")
+    
+    def create_action_buttons(self):
+        """Crea i pulsanti di azione"""
+        action_frame = ctk.CTkFrame(self, fg_color="transparent")
+        action_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        
+        # Select all/none buttons
+        select_all_btn = ctk.CTkButton(
+            action_frame,
+            text="☑️ Seleziona Tutti",
+            command=self.select_all_fir,
+            height=40,
+            width=150,
+            font=ctk.CTkFont(size=14)
+        )
+        select_all_btn.pack(side="left", padx=(0, 10))
+        
+        select_none_btn = ctk.CTkButton(
+            action_frame,
+            text="☐ Deseleziona Tutti",
+            command=self.select_none_fir,
+            height=40,
+            width=150,
+            font=ctk.CTkFont(size=14)
+        )
+        select_none_btn.pack(side="left", padx=(0, 20))
+        
+        # Action buttons
+        download_btn = ctk.CTkButton(
+            action_frame,
+            text="📥 Scarica PDF Selezionati",
+            command=self.download_selected_fir,
+            height=40,
+            width=200,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#00b894",
+            hover_color="#00d4aa"
+        )
+        download_btn.pack(side="left", padx=(0, 10))
+        
+        # Future annullamento button (disabled for now)
+        self.cancel_btn = ctk.CTkButton(
+            action_frame,
+            text="🗑️ Annulla Selezionati",
+            command=self.show_cancellation_info,
+            height=40,
+            width=180,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#e17055",
+            hover_color="#d63031",
+            state="disabled"  # Disabled since API doesn't exist
+        )
+        self.cancel_btn.pack(side="left", padx=(0, 10))
+        
+        # Info button
+        info_btn = ctk.CTkButton(
+            action_frame,
+            text="ℹ️ Info API",
+            command=self.show_api_info,
+            height=40,
+            width=100,
+            font=ctk.CTkFont(size=14)
+        )
+        info_btn.pack(side="right")
+    
+    def load_fir_data(self):
+        """Carica i dati FIR da tutti i blocchi"""
+        if not self.rest:
+            self.results_label.configure(text="⚠️ Nessun fornitore selezionato")
+            return
+        
+        self.results_label.configure(text="🔄 Caricamento FIR in corso...")
+        self.current_fir_list = []
+        
+        try:
+            # Get all blocks
+            blocchi = self.rest.blocchi()
+            block_values = ["Tutti i blocchi"] + [f"{b['codice_blocco']}" for b in blocchi]
+            self.block_filter.configure(values=block_values)
+            
+            # Get FIR from each block
+            for blocco in blocchi:
+                try:
+                    formulari = self.rest.formulari(blocco['codice_blocco'])
+                    for fir in formulari:
+                        fir_data = {
+                            'numero_fir': fir.get('numero_fir', 'N/A'),
+                            'codice_blocco': blocco['codice_blocco'],
+                            'progressivo': fir.get('progressivo', 'N/A'),
+                            'data_vidimazione': fir.get('data_vidimazione', 'N/A'),
+                            'stato': self.determine_fir_status(fir),
+                            'selected': False,
+                            'raw_data': fir
+                        }
+                        self.current_fir_list.append(fir_data)
+                except Exception as e:
+                    print(f"Errore caricamento FIR per blocco {blocco['codice_blocco']}: {e}")
+            
+            # Update display
+            self.filtered_fir_list = self.current_fir_list.copy()
+            self.update_fir_display()
+            self.results_label.configure(text=f"✅ Caricati {len(self.current_fir_list)} FIR da {len(blocchi)} blocchi")
+            
+        except Exception as e:
+            self.results_label.configure(text=f"❌ Errore caricamento: {str(e)}")
+    
+    def determine_fir_status(self, fir):
+        """Determina lo stato del FIR"""
+        # Logic to determine status based on FIR data
+        if fir.get('numero_fir'):
+            return "Vidimato"
+        else:
+            return "Disponibile"
+    
+    def on_search_change(self, event):
+        """Gestisce la ricerca in tempo reale"""
+        query = self.search_entry.get().lower().strip()
+        self.apply_filters()
+    
+    def on_filter_change(self, value=None):
+        """Gestisce i cambi di filtro"""
+        self.apply_filters()
+    
+    def apply_filters(self):
+        """Applica tutti i filtri attivi"""
+        query = self.search_entry.get().lower().strip()
+        block_filter = self.block_filter.get()
+        status_filter = self.status_filter.get()
+        
+        self.filtered_fir_list = []
+        
+        for fir in self.current_fir_list:
+            # Text search filter
+            if query:
+                searchable_text = f"{fir['numero_fir']} {fir['codice_blocco']} {fir['progressivo']}".lower()
+                if query not in searchable_text:
+                    continue
+            
+            # Block filter
+            if block_filter != "Tutti i blocchi":
+                if fir['codice_blocco'] != block_filter:
+                    continue
+            
+            # Status filter
+            if status_filter != "Tutti":
+                if fir['stato'] != status_filter:
+                    continue
+            
+            self.filtered_fir_list.append(fir)
+        
+        self.update_fir_display()
+        self.update_results_label()
+    
+    def update_fir_display(self):
+        """Aggiorna la visualizzazione dei FIR"""
+        # Clear existing rows
+        for widget in self.fir_scroll_frame.winfo_children():
+            widget.destroy()
+        
+        if not self.filtered_fir_list:
+            no_results_label = ctk.CTkLabel(
+                self.fir_scroll_frame,
+                text="🔍 Nessun FIR trovato con i criteri attuali",
+                font=ctk.CTkFont(size=16),
+                text_color="gray"
+            )
+            no_results_label.pack(pady=50)
+            return
+        
+        # Create rows for each FIR
+        for i, fir in enumerate(self.filtered_fir_list):
+            self.create_fir_row(fir, i)
+    
+    def create_fir_row(self, fir, row_index):
+        """Crea una riga per un FIR"""
+        row_frame = ctk.CTkFrame(self.fir_scroll_frame, height=60)
+        row_frame.pack(fill="x", padx=10, pady=2)
+        row_frame.pack_propagate(False)
+        
+        # Configure grid
+        col_weights = [1, 3, 2, 1, 2, 1, 2]
+        for i, weight in enumerate(col_weights):
+            row_frame.grid_columnconfigure(i, weight=weight)
+        
+        # Checkbox
+        checkbox_var = ctk.BooleanVar(value=fir['selected'])
+        checkbox = ctk.CTkCheckBox(
+            row_frame,
+            text="",
+            variable=checkbox_var,
+            command=lambda f=fir, v=checkbox_var: self.on_fir_select(f, v.get())
+        )
+        checkbox.grid(row=0, column=0, padx=5, pady=15)
+        
+        # Numero FIR
+        fir_label = ctk.CTkLabel(
+            row_frame,
+            text=fir['numero_fir'],
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="center"
+        )
+        fir_label.grid(row=0, column=1, padx=5, pady=15, sticky="ew")
+        
+        # Blocco
+        block_label = ctk.CTkLabel(
+            row_frame,
+            text=fir['codice_blocco'],
+            font=ctk.CTkFont(size=12),
+            anchor="center"
+        )
+        block_label.grid(row=0, column=2, padx=5, pady=15, sticky="ew")
+        
+        # Progressivo
+        prog_label = ctk.CTkLabel(
+            row_frame,
+            text=str(fir['progressivo']),
+            font=ctk.CTkFont(size=12),
+            anchor="center"
+        )
+        prog_label.grid(row=0, column=3, padx=5, pady=15, sticky="ew")
+        
+        # Data vidimazione
+        date_label = ctk.CTkLabel(
+            row_frame,
+            text=fir['data_vidimazione'],
+            font=ctk.CTkFont(size=12),
+            anchor="center"
+        )
+        date_label.grid(row=0, column=4, padx=5, pady=15, sticky="ew")
+        
+        # Stato
+        status_color = "#00b894" if fir['stato'] == "Vidimato" else "#fdcb6e"
+        status_label = ctk.CTkLabel(
+            row_frame,
+            text=fir['stato'],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=status_color,
+            anchor="center"
+        )
+        status_label.grid(row=0, column=5, padx=5, pady=15, sticky="ew")
+        
+        # Action buttons
+        action_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        action_frame.grid(row=0, column=6, padx=5, pady=10, sticky="ew")
+        
+        # Download button
+        download_btn = ctk.CTkButton(
+            action_frame,
+            text="📥",
+            command=lambda f=fir: self.download_single_fir(f),
+            width=30,
+            height=30,
+            font=ctk.CTkFont(size=12)
+        )
+        download_btn.pack(side="left", padx=2)
+        
+        # Details button
+        details_btn = ctk.CTkButton(
+            action_frame,
+            text="👁️",
+            command=lambda f=fir: self.show_fir_details(f),
+            width=30,
+            height=30,
+            font=ctk.CTkFont(size=12)
+        )
+        details_btn.pack(side="left", padx=2)
+    
+    def on_fir_select(self, fir, selected):
+        """Gestisce la selezione di un FIR"""
+        fir['selected'] = selected
+        self.update_selection_count()
+    
+    def update_selection_count(self):
+        """Aggiorna il conteggio delle selezioni"""
+        selected_count = sum(1 for fir in self.filtered_fir_list if fir['selected'])
+        if selected_count > 0:
+            self.cancel_btn.configure(text=f"🗑️ Annulla Selezionati ({selected_count})")
+        else:
+            self.cancel_btn.configure(text="🗑️ Annulla Selezionati")
+    
+    def update_results_label(self):
+        """Aggiorna il label dei risultati"""
+        total = len(self.current_fir_list)
+        filtered = len(self.filtered_fir_list)
+        
+        if total == filtered:
+            self.results_label.configure(text=f"📊 Visualizzati {total} FIR")
+        else:
+            self.results_label.configure(text=f"📊 Visualizzati {filtered} di {total} FIR")
+    
+    def clear_search(self):
+        """Cancella la ricerca"""
+        self.search_entry.delete(0, "end")
+        self.block_filter.set("Tutti i blocchi")
+        self.status_filter.set("Tutti")
+        self.apply_filters()
+    
+    def select_all_fir(self):
+        """Seleziona tutti i FIR visibili"""
+        for fir in self.filtered_fir_list:
+            fir['selected'] = True
+        self.update_fir_display()
+        self.update_selection_count()
+    
+    def select_none_fir(self):
+        """Deseleziona tutti i FIR"""
+        for fir in self.current_fir_list:
+            fir['selected'] = False
+        self.update_fir_display()
+        self.update_selection_count()
+    
+    def download_single_fir(self, fir):
+        """Scarica un singolo FIR"""
+        if not self.rest:
+            messagebox.showerror("Errore", "Nessun fornitore selezionato")
+            return
+        
+        # Ask for output directory
+        output_dir = filedialog.askdirectory(title="Seleziona cartella di destinazione")
+        if not output_dir:
+            return
+        
+        try:
+            success = self.rest.dl_pdf(
+                fir['codice_blocco'],
+                fir['progressivo'],
+                fir['numero_fir'],
+                output_dir
+            )
+            
+            if success:
+                messagebox.showinfo("Successo", f"PDF scaricato per FIR {fir['numero_fir']}")
+            else:
+                messagebox.showerror("Errore", f"Errore nel download del PDF per FIR {fir['numero_fir']}")
+                
+        except Exception as e:
+            messagebox.showerror("Errore", f"Errore durante il download: {str(e)}")
+    
+    def download_selected_fir(self):
+        """Scarica tutti i FIR selezionati"""
+        selected_fir = [fir for fir in self.filtered_fir_list if fir['selected']]
+        
+        if not selected_fir:
+            messagebox.showwarning("Attenzione", "Nessun FIR selezionato")
+            return
+        
+        if not self.rest:
+            messagebox.showerror("Errore", "Nessun fornitore selezionato")
+            return
+        
+        # Ask for output directory
+        output_dir = filedialog.askdirectory(title="Seleziona cartella di destinazione")
+        if not output_dir:
+            return
+        
+        # Download in thread
+        def download_worker():
+            success_count = 0
+            for fir in selected_fir:
+                try:
+                    success = self.rest.dl_pdf(
+                        fir['codice_blocco'],
+                        fir['progressivo'],
+                        fir['numero_fir'],
+                        output_dir
+                    )
+                    if success:
+                        success_count += 1
+                except Exception as e:
+                    print(f"Errore download FIR {fir['numero_fir']}: {e}")
+            
+            # Show result
+            self.after(0, lambda: messagebox.showinfo(
+                "Download Completato", 
+                f"Scaricati {success_count} di {len(selected_fir)} PDF"
+            ))
+        
+        threading.Thread(target=download_worker, daemon=True).start()
+    
+    def show_fir_details(self, fir):
+        """Mostra i dettagli di un FIR"""
+        details_window = ctk.CTkToplevel(self)
+        details_window.title(f"Dettagli FIR {fir['numero_fir']}")
+        details_window.geometry("600x500")
+        
+        # Title
+        title_label = ctk.CTkLabel(
+            details_window,
+            text=f"Dettagli FIR {fir['numero_fir']}",
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title_label.pack(pady=20)
+        
+        # Details frame
+        details_frame = ctk.CTkScrollableFrame(details_window)
+        details_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Display all FIR data
+        details_text = ""
+        for key, value in fir['raw_data'].items():
+            details_text += f"{key}: {value}\n"
+        
+        text_widget = ctk.CTkTextbox(details_frame, height=300)
+        text_widget.pack(fill="both", expand=True)
+        text_widget.insert("1.0", details_text)
+    
+    def show_cancellation_info(self):
+        """Mostra informazioni sull'annullamento (attualmente non disponibile)"""
+        info_text = """
+Annullamento FIR - Informazioni Importanti
+
+❌ FUNZIONALITÀ NON DISPONIBILE
+L'endpoint API per l'annullamento diretto dei formulari FIR non è attualmente disponibile nelle API RENTRI v1.0.
+
+📋 PROCESSO ALTERNATIVO
+Secondo la documentazione RENTRI, gli annullamenti devono essere gestiti tramite:
+• Registrazioni di rettifica nei registri di carico e scarico
+• Annotazioni di annullamento con motivazione
+
+🔧 SVILUPPI FUTURI
+Questa funzionalità è predisposta per essere attivata non appena:
+• L'endpoint API sarà reso disponibile da RENTRI
+• Saranno pubblicate le specifiche tecniche
+
+ℹ️ NOTA TECNICA
+Il pulsante "Annulla Selezionati" è attualmente disabilitato fino all'implementazione dell'API corrispondente.
+        """
+        
+        info_window = ctk.CTkToplevel(self)
+        info_window.title("Info Annullamento FIR")
+        info_window.geometry("500x400")
+        
+        text_widget = ctk.CTkTextbox(info_window, wrap="word")
+        text_widget.pack(fill="both", expand=True, padx=20, pady=20)
+        text_widget.insert("1.0", info_text)
+        text_widget.configure(state="disabled")
+    
+    def show_api_info(self):
+        """Mostra informazioni sulle API"""
+        api_info = """
+API RENTRI - Informazioni Tecniche
+
+🔗 ENDPOINT DISPONIBILI:
+• GET /vidimazione-formulari/v1.0 - Lista blocchi
+• GET /vidimazione-formulari/v1.0/{blocco} - Lista FIR
+• POST /vidimazione-formulari/v1.0/{blocco} - Vidima FIR
+• GET /vidimazione-formulari/v1.0/{blocco}/{prog}/pdf - Download PDF
+
+❌ ENDPOINT NON DISPONIBILI:
+• PUT /vidimazione-formulari/v1.0/{blocco}/{prog}/annulla
+
+📚 DOCUMENTAZIONE:
+• https://api.rentri.gov.it/docs?api=vidimazione-formulari&v=v1.0
+
+🔄 AGGIORNAMENTI:
+La sezione verrà aggiornata automaticamente quando nuovi endpoint saranno disponibili.
+        """
+        
+        api_window = ctk.CTkToplevel(self)
+        api_window.title("Info API RENTRI")
+        api_window.geometry("500x300")
+        
+        text_widget = ctk.CTkTextbox(api_window, wrap="word")
+        text_widget.pack(fill="both", expand=True, padx=20, pady=20)
+        text_widget.insert("1.0", api_info)
+        text_widget.configure(state="disabled")
+
 class ModernRentriManager:
     def __init__(self):
         self.root = ctk.CTk()
         self.root.title(APP_TITLE)
         
-        # NUOVO: Avvio a schermo intero
-        # Detect OS and set fullscreen appropriately
-        if sys.platform.startswith('win'):
-            # Windows
-            self.root.state('zoomed')
-        elif sys.platform.startswith('darwin'):
-            # macOS
-            self.root.attributes('-zoomed', True)
-        else:
-            # Linux/Unix
-            self.root.attributes('-zoomed', True)
-        
-        # Alternative method for cross-platform fullscreen
+        # NUOVO: Fix completo per fullscreen cross-platform
         self.root.update_idletasks()
-        width = self.root.winfo_screenwidth()
-        height = self.root.winfo_screenheight()
-        self.root.geometry(f"{width}x{height}+0+0")
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        
+        # Imposta geometria a schermo intero
+        self.root.geometry(f"{screen_w}x{screen_h}+0+0")
+        
+        # Prova diversi metodi per il fullscreen in base al sistema
+        try:
+            if sys.platform.startswith('win'):
+                # Windows: usa state zoomed
+                self.root.state('zoomed')
+            elif sys.platform.startswith('darwin'):
+                # macOS: usa attributes zoomed
+                self.root.attributes('-zoomed', True)
+            else:
+                # Linux/Unix: prova fullscreen poi zoomed come fallback
+                try:
+                    self.root.attributes('-fullscreen', True)
+                except:
+                    self.root.attributes('-zoomed', True)
+        except Exception as e:
+            # Fallback finale: imposta solo la geometria massima
+            dbg(f"Fallback fullscreen: {e}")
+            self.root.geometry(f"{screen_w}x{screen_h}+0+0")
         
         self.root.minsize(1200, 800)
         
@@ -1022,6 +1665,7 @@ class ModernRentriManager:
             ("suppliers", "🏢 Fornitori", self.show_supplier_selection),
             ("blocks", "📋 Blocchi", self.show_blocks_view),
             ("vidimation", "✅ Vidimazione", self.show_vidimation_view),
+            ("fir_management", "🗑️ Gestione FIR", self.show_fir_management_view),  # NUOVA SEZIONE
         ]
         
         for key, text, command in sections:
@@ -1841,6 +2485,14 @@ class ModernRentriManager:
         self.root.after(200, poll_worker)
         worker.start()
     
+    # NUOVA SEZIONE: FIR Management View
+    def show_fir_management_view(self):
+        """Mostra la vista di gestione FIR"""
+        self.set_active_nav("fir_management")
+        self.clear_content()
+        
+        FIRAnnullaView(self.content_frame, self.rest).grid(row=0, column=0, sticky="nsew")
+    
     # PDF Tools Views
     def show_delivery_view(self):
         self.set_active_nav("delivery")
@@ -2019,7 +2671,7 @@ class ModernRentriManager:
         
         about_text = ctk.CTkLabel(
             about_section,
-            text="RENTRI Manager - Complete Edition with Certificate Management\n\n"
+            text="RENTRI Manager - Complete Edition + Gestione FIR\n\n"
                  "✓ Gestione fornitori con ricerca avanzata\n"
                  "✓ Vidimazione automatizzata FIR\n"
                  "✓ Dashboard moderno con statistiche\n"
@@ -2027,9 +2679,10 @@ class ModernRentriManager:
                  "✓ Logo personalizzabile\n"
                  "✓ Tema scuro/chiaro\n"
                  "✓ Interface moderna con CustomTkinter\n"
-                 "✓ Avvio a schermo intero\n"
+                 "✓ Avvio a schermo intero (FIX cross-platform)\n"
                  "✓ Progress window sempre in primo piano\n"
-                 "✓ NUOVO: Gestione certificato con date e aggiornamento\n\n"
+                 "✓ Gestione certificato con date e aggiornamento\n"
+                 "✓ NUOVO: Gestione FIR con tabella e ricerca\n\n"
                  "Progettata per massima usabilità e performance",
             font=ctk.CTkFont(size=14),
             anchor="w",
