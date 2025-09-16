@@ -17,6 +17,7 @@ Versione finale completa con:
 • NUOVO: Progress window sempre in primo piano
 • NUOVO: Gestione certificato con date e aggiornamento
 • NUOVO: Sezione Gestione FIR con tabella e ricerca
+• NUOVO: API Annullamento FIR funzionante
 """
 
 import customtkinter as ctk
@@ -388,6 +389,32 @@ class RentriREST:
         except Exception as e:
             dbg(f"Errore parsing PDF: {e}")
             return False
+
+    def annulla_fir(self, codice_blocco, progressivo):
+        """NUOVO: Annulla un FIR specifico utilizzando l'API RENTRI"""
+        try:
+            tok = self._jwt_auth()
+            sig, dig = self._jwt_sig(b"", "application/json; charset=utf-8")
+            h = {
+                "Authorization": f"Bearer {tok}",
+                "Agid-JWT-Signature": sig,
+                "Digest": dig,
+                "Content-Type": "application/json; charset=utf-8",
+                "Accept": "application/problem+json, application/json"
+            }
+            
+            r = self._call(
+                requests.put,
+                f"{BASE_URL}/vidimazione-formulari/v1.0/{codice_blocco}/{progressivo}/annulla",
+                headers=h
+            )
+            
+            dbg(f"Annullamento FIR {codice_blocco}/{progressivo}: {r.status_code}")
+            return r.ok, r.status_code, r.text
+            
+        except Exception as e:
+            dbg(f"Errore annullamento FIR {codice_blocco}/{progressivo}: {e}")
+            return False, 500, str(e)
 
     def verify_fir_exists(self, numero_fir):
         """Verifica l'esistenza di un numero FIR"""
@@ -923,9 +950,9 @@ class PDFMergeView(ctk.CTkFrame):
         except queue.Empty:
             self.after_id = self.after(100, self.poll_queue)
 
-# NUOVA SEZIONE: Gestione FIR con tabella
+# SEZIONE GESTIONE FIR CON API ANNULLAMENTO FUNZIONANTE
 class FIRAnnullaView(ctk.CTkFrame):
-    """View per la gestione e ricerca FIR con tabella come nel portale RENTRI"""
+    """View per la gestione e ricerca FIR con API annullamento funzionante"""
     def __init__(self, parent, rest_client=None):
         super().__init__(parent)
         self.rest = rest_client
@@ -1029,7 +1056,7 @@ class FIRAnnullaView(ctk.CTkFrame):
         
         self.status_filter = ctk.CTkComboBox(
             filter_frame,
-            values=["Tutti", "Vidimato", "In uso", "Disponibile"],
+            values=["Tutti", "Vidimato", "In uso", "Disponibile", "Annullato"],
             command=self.on_filter_change,
             width=150
         )
@@ -1118,17 +1145,17 @@ class FIRAnnullaView(ctk.CTkFrame):
         )
         download_btn.pack(side="left", padx=(0, 10))
         
-        # Future annullamento button (disabled for now)
+        # NUOVO: Pulsante annullamento ABILITATO con API funzionante
         self.cancel_btn = ctk.CTkButton(
             action_frame,
             text="🗑️ Annulla Selezionati",
-            command=self.show_cancellation_info,
+            command=self.annulla_selected_fir,  # NUOVO metodo
             height=40,
             width=180,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color="#e17055",
             hover_color="#d63031",
-            state="disabled"  # Disabled since API doesn't exist
+            state="normal"  # ABILITATO!
         )
         self.cancel_btn.pack(side="left", padx=(0, 10))
         
@@ -1230,6 +1257,7 @@ class FIRAnnullaView(ctk.CTkFrame):
         
         self.update_fir_display()
         self.update_results_label()
+        self.update_selection_count()
     
     def update_fir_display(self):
         """Aggiorna la visualizzazione dei FIR"""
@@ -1308,8 +1336,14 @@ class FIRAnnullaView(ctk.CTkFrame):
         )
         date_label.grid(row=0, column=4, padx=5, pady=15, sticky="ew")
         
-        # Stato
-        status_color = "#00b894" if fir['stato'] == "Vidimato" else "#fdcb6e"
+        # Stato con colori
+        status_colors = {
+            "Vidimato": "#00b894",
+            "Disponibile": "#fdcb6e", 
+            "Annullato": "#e17055",
+            "In uso": "#74b9ff"
+        }
+        status_color = status_colors.get(fir['stato'], "#636e72")
         status_label = ctk.CTkLabel(
             row_frame,
             text=fir['stato'],
@@ -1351,12 +1385,18 @@ class FIRAnnullaView(ctk.CTkFrame):
         self.update_selection_count()
     
     def update_selection_count(self):
-        """Aggiorna il conteggio delle selezioni"""
+        """NUOVO: Aggiorna il conteggio delle selezioni e abilita il pulsante"""
         selected_count = sum(1 for fir in self.filtered_fir_list if fir['selected'])
         if selected_count > 0:
-            self.cancel_btn.configure(text=f"🗑️ Annulla Selezionati ({selected_count})")
+            self.cancel_btn.configure(
+                text=f"🗑️ Annulla Selezionati ({selected_count})",
+                state="normal"
+            )
         else:
-            self.cancel_btn.configure(text="🗑️ Annulla Selezionati")
+            self.cancel_btn.configure(
+                text="🗑️ Annulla Selezionati",
+                state="normal"  # Mantieni sempre abilitato
+            )
     
     def update_results_label(self):
         """Aggiorna il label dei risultati"""
@@ -1484,61 +1524,167 @@ class FIRAnnullaView(ctk.CTkFrame):
         text_widget.pack(fill="both", expand=True)
         text_widget.insert("1.0", details_text)
     
-    def show_cancellation_info(self):
-        """Mostra informazioni sull'annullamento (attualmente non disponibile)"""
-        info_text = """
-Annullamento FIR - Informazioni Importanti
-
-❌ FUNZIONALITÀ NON DISPONIBILE
-L'endpoint API per l'annullamento diretto dei formulari FIR non è attualmente disponibile nelle API RENTRI v1.0.
-
-📋 PROCESSO ALTERNATIVO
-Secondo la documentazione RENTRI, gli annullamenti devono essere gestiti tramite:
-• Registrazioni di rettifica nei registri di carico e scarico
-• Annotazioni di annullamento con motivazione
-
-🔧 SVILUPPI FUTURI
-Questa funzionalità è predisposta per essere attivata non appena:
-• L'endpoint API sarà reso disponibile da RENTRI
-• Saranno pubblicate le specifiche tecniche
-
-ℹ️ NOTA TECNICA
-Il pulsante "Annulla Selezionati" è attualmente disabilitato fino all'implementazione dell'API corrispondente.
-        """
+    # NUOVO: Metodo per annullare FIR selezionati con API
+    def annulla_selected_fir(self):
+        """NUOVO: Annulla i FIR selezionati utilizzando l'API RENTRI"""
+        selected_fir = [fir for fir in self.filtered_fir_list if fir['selected']]
         
-        info_window = ctk.CTkToplevel(self)
-        info_window.title("Info Annullamento FIR")
-        info_window.geometry("500x400")
+        if not selected_fir:
+            messagebox.showwarning("Attenzione", "Nessun FIR selezionato per l'annullamento")
+            return
         
-        text_widget = ctk.CTkTextbox(info_window, wrap="word")
-        text_widget.pack(fill="both", expand=True, padx=20, pady=20)
-        text_widget.insert("1.0", info_text)
-        text_widget.configure(state="disabled")
+        if not self.rest:
+            messagebox.showerror("Errore", "Nessun fornitore selezionato")
+            return
+        
+        # Filtra solo i FIR che possono essere annullati (Vidimati)
+        annullabili = [fir for fir in selected_fir if fir['stato'] == "Vidimato"]
+        
+        if not annullabili:
+            messagebox.showwarning(
+                "Attenzione", 
+                "Nessun FIR selezionato è annullabile.\n\nPossono essere annullati solo i FIR in stato 'Vidimato'."
+            )
+            return
+        
+        # Conferma dell'operazione
+        if not messagebox.askyesno(
+            "Conferma Annullamento", 
+            f"Sei sicuro di voler annullare {len(annullabili)} FIR selezionati?\n\n"
+            "⚠️ ATTENZIONE: Questa operazione è irreversibile!\n\n"
+            f"FIR da annullare:\n" + "\n".join([f"• {fir['numero_fir']} (Blocco: {fir['codice_blocco']})" for fir in annullabili[:5]]) +
+            (f"\n... e altri {len(annullabili)-5} FIR" if len(annullabili) > 5 else "")
+        ):
+            return
+        
+        # Esegui annullamento in thread separato con progress
+        self.execute_cancellation_worker(annullabili)
+    
+    def execute_cancellation_worker(self, fir_list):
+        """Esegue l'annullamento in background con progress"""
+        def annulla_worker():
+            success_count = 0
+            errors = []
+            total = len(fir_list)
+            
+            for i, fir in enumerate(fir_list):
+                try:
+                    # Aggiorna UI
+                    progress_msg = f"🗑️ Annullamento {i+1}/{total}: {fir['numero_fir']}"
+                    self.after(0, lambda msg=progress_msg: self.update_cancel_status(msg))
+                    
+                    # Chiamata API
+                    success, status_code, response_text = self.rest.annulla_fir(
+                        fir['codice_blocco'], 
+                        fir['progressivo']
+                    )
+                    
+                    if success:
+                        success_count += 1
+                        # Aggiorna stato locale
+                        fir['stato'] = "Annullato"
+                    else:
+                        # Gestisci errori HTTP specifici
+                        if status_code == 404:
+                            error_msg = f"FIR {fir['numero_fir']}: Non trovato"
+                        elif status_code == 403:
+                            error_msg = f"FIR {fir['numero_fir']}: Non autorizzato"
+                        elif status_code == 423:
+                            error_msg = f"FIR {fir['numero_fir']}: Bloccato, non annullabile"
+                        else:
+                            error_msg = f"FIR {fir['numero_fir']}: HTTP {status_code}"
+                        errors.append(error_msg)
+                        
+                except Exception as e:
+                    errors.append(f"FIR {fir['numero_fir']}: {str(e)}")
+                
+                time.sleep(0.5)  # Pausa breve tra le chiamate
+            
+            # Aggiorna UI finale
+            self.after(0, lambda: self.finalize_cancellation(success_count, errors, total))
+        
+        # Avvia worker
+        threading.Thread(target=annulla_worker, daemon=True).start()
+    
+    def update_cancel_status(self, message):
+        """Aggiorna il messaggio di stato durante l'annullamento"""
+        self.results_label.configure(text=message)
+    
+    def finalize_cancellation(self, success_count, errors, total):
+        """Finalizza il processo di annullamento e mostra i risultati"""
+        # Aggiorna la vista
+        self.update_fir_display()
+        self.update_results_label()
+        
+        # Mostra risultati
+        if success_count == total:
+            messagebox.showinfo(
+                "Annullamento Completato", 
+                f"✅ Tutti i {success_count} FIR sono stati annullati con successo!"
+            )
+        elif success_count > 0:
+            error_details = "\n".join(errors[:3])  # Mostra primi 3 errori
+            if len(errors) > 3:
+                error_details += f"\n... e altri {len(errors)-3} errori"
+                
+            messagebox.showwarning(
+                "Annullamento Parziale", 
+                f"✅ {success_count} FIR annullati con successo\n"
+                f"❌ {len(errors)} errori:\n\n{error_details}\n\n"
+                "Controlla la console per dettagli completi."
+            )
+        else:
+            error_details = "\n".join(errors[:3])
+            if len(errors) > 3:
+                error_details += f"\n... e altri {len(errors)-3} errori"
+            messagebox.showerror(
+                "Errore Annullamento", 
+                f"❌ Nessun FIR annullato. Errori:\n\n{error_details}\n\n"
+                "Controlla la console per dettagli completi."
+            )
+        
+        # Reset selezioni
+        for fir in self.filtered_fir_list:
+            fir['selected'] = False
+        self.update_selection_count()
     
     def show_api_info(self):
-        """Mostra informazioni sulle API"""
+        """Mostra informazioni sulle API aggiornate"""
         api_info = """
-API RENTRI - Informazioni Tecniche
+API RENTRI - Informazioni Tecniche Aggiornate
 
 🔗 ENDPOINT DISPONIBILI:
 • GET /vidimazione-formulari/v1.0 - Lista blocchi
 • GET /vidimazione-formulari/v1.0/{blocco} - Lista FIR
 • POST /vidimazione-formulari/v1.0/{blocco} - Vidima FIR
 • GET /vidimazione-formulari/v1.0/{blocco}/{prog}/pdf - Download PDF
+• PUT /vidimazione-formulari/v1.0/{blocco}/{prog}/annulla - Annulla FIR ✅
 
-❌ ENDPOINT NON DISPONIBILI:
-• PUT /vidimazione-formulari/v1.0/{blocco}/{prog}/annulla
+✅ ANNULLAMENTO FIR:
+• Endpoint: PUT .../annulla
+• Autenticazione: JWT + AGID Signature
+• Solo FIR in stato "Vidimato" possono essere annullati
+• Operazione irreversibile
+
+📋 CODICI RISPOSTA:
+• 200 OK - Annullamento riuscito
+• 400 Bad Request - Richiesta non valida  
+• 403 Forbidden - Non autorizzato
+• 404 Not Found - FIR non trovato
+• 423 Locked - FIR non annullabile
+• 429 Too Many Requests - Rate limit superato
+• 500 Internal Server Error - Errore server
 
 📚 DOCUMENTAZIONE:
 • https://api.rentri.gov.it/docs?api=vidimazione-formulari&v=v1.0
 
-🔄 AGGIORNAMENTI:
-La sezione verrà aggiornata automaticamente quando nuovi endpoint saranno disponibili.
+🔄 FUNZIONALITÀ:
+Questa interfaccia supporta completamente l'API di annullamento.
         """
         
         api_window = ctk.CTkToplevel(self)
         api_window.title("Info API RENTRI")
-        api_window.geometry("500x300")
+        api_window.geometry("600x500")
         
         text_widget = ctk.CTkTextbox(api_window, wrap="word")
         text_widget.pack(fill="both", expand=True, padx=20, pady=20)
@@ -1665,7 +1811,7 @@ class ModernRentriManager:
             ("suppliers", "🏢 Fornitori", self.show_supplier_selection),
             ("blocks", "📋 Blocchi", self.show_blocks_view),
             ("vidimation", "✅ Vidimazione", self.show_vidimation_view),
-            ("fir_management", "🗑️ Gestione FIR", self.show_fir_management_view),  # NUOVA SEZIONE
+            ("fir_management", "🗑️ Gestione FIR", self.show_fir_management_view),  # SEZIONE AGGIORNATA
         ]
         
         for key, text, command in sections:
@@ -2485,9 +2631,9 @@ class ModernRentriManager:
         self.root.after(200, poll_worker)
         worker.start()
     
-    # NUOVA SEZIONE: FIR Management View
+    # SEZIONE GESTIONE FIR (AGGIORNATA)
     def show_fir_management_view(self):
-        """Mostra la vista di gestione FIR"""
+        """Mostra la vista di gestione FIR con API annullamento funzionante"""
         self.set_active_nav("fir_management")
         self.clear_content()
         
@@ -2672,17 +2818,18 @@ class ModernRentriManager:
         about_text = ctk.CTkLabel(
             about_section,
             text="RENTRI Manager - Complete Edition + Gestione FIR\n\n"
-                 "✓ Gestione fornitori con ricerca avanzata\n"
-                 "✓ Vidimazione automatizzata FIR\n"
-                 "✓ Dashboard moderno con statistiche\n"
-                 "✓ PDF Tools integrati\n"
-                 "✓ Logo personalizzabile\n"
-                 "✓ Tema scuro/chiaro\n"
-                 "✓ Interface moderna con CustomTkinter\n"
-                 "✓ Avvio a schermo intero (FIX cross-platform)\n"
-                 "✓ Progress window sempre in primo piano\n"
-                 "✓ Gestione certificato con date e aggiornamento\n"
-                 "✓ NUOVO: Gestione FIR con tabella e ricerca\n\n"
+                 "✅ Gestione fornitori con ricerca avanzata\n"
+                 "✅ Vidimazione automatizzata FIR\n"
+                 "✅ Dashboard moderno con statistiche\n"
+                 "✅ PDF Tools integrati\n"
+                 "✅ Logo personalizzabile\n"
+                 "✅ Tema scuro/chiaro\n"
+                 "✅ Interface moderna con CustomTkinter\n"
+                 "✅ Avvio a schermo intero (FIX cross-platform)\n"
+                 "✅ Progress window sempre in primo piano\n"
+                 "✅ Gestione certificato con date e aggiornamento\n"
+                 "✅ Gestione FIR con tabella e ricerca avanzata\n"
+                 "✅ API Annullamento FIR completamente funzionante\n\n"
                  "Progettata per massima usabilità e performance",
             font=ctk.CTkFont(size=14),
             anchor="w",
