@@ -1056,7 +1056,7 @@ class FIRAnnullaView(ctk.CTkFrame):
         
         self.status_filter = ctk.CTkComboBox(
             filter_frame,
-            values=["Tutti", "Vidimato", "In uso", "Disponibile", "Annullato"],
+            values=["Tutti", "Vidimato", "Disponibile", "Annullato"],
             command=self.on_filter_change,
             width=150
         )
@@ -1212,12 +1212,11 @@ class FIRAnnullaView(ctk.CTkFrame):
             self.results_label.configure(text=f"❌ Errore caricamento: {str(e)}")
     
     def determine_fir_status(self, fir):
-        """Determina lo stato del FIR"""
-        # Logic to determine status based on FIR data
+        if (fir.get('stato') or '').lower() == 'annullato' or fir.get('annullato', False) is True:
+            return "Annullato"
         if fir.get('numero_fir'):
             return "Vidimato"
-        else:
-            return "Disponibile"
+        return "Disponibile"
     
     def on_search_change(self, event):
         """Gestisce la ricerca in tempo reale"""
@@ -1340,8 +1339,7 @@ class FIRAnnullaView(ctk.CTkFrame):
         status_colors = {
             "Vidimato": "#00b894",
             "Disponibile": "#fdcb6e", 
-            "Annullato": "#e17055",
-            "In uso": "#74b9ff"
+            "Annullato": "#e17055"
         }
         status_color = status_colors.get(fir['stato'], "#636e72")
         status_label = ctk.CTkLabel(
@@ -1647,6 +1645,8 @@ class FIRAnnullaView(ctk.CTkFrame):
         for fir in self.filtered_fir_list:
             fir['selected'] = False
         self.update_selection_count()
+        self.load_fir_data()
+
     
     def show_api_info(self):
         """Mostra informazioni sulle API aggiornate"""
