@@ -988,7 +988,55 @@ class FIRAnnullaView(ctk.CTkFrame):
                 if f['codice_blocco'] == codice_blocco and str(f['progressivo']) == str(progressivo):
                     f['stato'] = stato
 
-    def load_fir_data(self):
+def load_fir_data(self):
+    """Carica i dati FIR da tutti i blocchi"""
+    if not self.rest:
+        self.results_label.configure(text="⚠️ Nessun fornitore selezionato")
+        return
+
+    self.results_label.configure(text="🔄 Caricamento FIR in corso...")
+    self.current_fir_list = []
+
+    try:
+        # Get all blocks
+        blocchi = self.rest.blocchi()
+        block_values = ["Tutti i blocchi"] + [f"{b['codice_blocco']}" for b in blocchi]
+        self.block_filter.configure(values=block_values)
+
+        # Get FIR from each block
+        for blocco in blocchi:
+            try:
+                formulari = self.rest.formulari(blocco['codice_blocco'])
+                for fir in formulari:
+                    # STATO calcolato via is_annullato dell'API
+                    if fir.get("is_annullato", False):
+                        stato = "Annullato"
+                    elif fir.get('numero_fir'):
+                        stato = "Vidimato"
+                    else:
+                        stato = "Disponibile"
+
+                    fir_data = {
+                        'numero_fir': fir.get('numero_fir', 'N/A'),
+                        'codice_blocco': blocco['codice_blocco'],
+                        'progressivo': fir.get('progressivo', 'N/A'),
+                        'data_vidimazione': fir.get('data_vidimazione', 'N/A'),
+                        'stato': stato,
+                        'selected': False,
+                        'raw_data': fir
+                    }
+                    self.current_fir_list.append(fir_data)
+            except Exception as e:
+                print(f"Errore caricamento FIR per blocco {blocco['codice_blocco']}: {e}")
+
+        # Update display
+        self.filtered_fir_list = self.current_fir_list.copy()
+        self.update_fir_display()
+        self.results_label.configure(text=f"✅ Caricati {len(self.current_fir_list)} FIR da {len(blocchi)} blocchi")
+
+    except Exception as e:
+        self.results_label.configure(text=f"❌ Errore caricamento: {str(e)}")
+
         # ... (inizio come prima)
         try:
             blocchi = self.rest.blocchi()
