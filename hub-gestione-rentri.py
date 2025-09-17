@@ -952,12 +952,95 @@ class PDFMergeView(ctk.CTkFrame):
 
 # SEZIONE GESTIONE FIR CON API ANNULLAMENTO FUNZIONANTE
 class FIRAnnullaView(ctk.CTkFrame):
+    def __init__(self, parent, rest_client=None):
+        super().__init__(parent)
+        self.rest = rest_client
+        self.current_fir_list = []
+        self.filtered_fir_list = []
+        self.cancelled_fir_cache = {}  # NUOVA riga: cache locale FIR annullati {(blocco, progressivo): True}
+        ...
+        # (il resto del tuo __init__)
+
+    def determine_fir_status(self, fir, codice_blocco=None):
+        if codice_blocco is None:
+            codice_blocco = fir.get('codice_blocco', '')
+        progressivo = str(fir.get('progressivo', ''))
+        cache_key = (codice_blocco, progressivo)
+        if cache_key in self.cancelled_fir_cache:
+            return "Annullato"
+        api_state = (fir.get('stato') or '').strip().lower()
+        if api_state == "annullato":
+            return "Annullato"
+        if fir.get('annullato') is True:
+            return "Annullato"
+        if fir.get('numero_fir'):
+            return "Vidimato"
+        return "Disponibile"
+
+    def _set_local_status(self, codice_blocco, progressivo, stato):
+        cache_key = (codice_blocco, str(progressivo))
+        if stato == "Annullato":
+            self.cancelled_fir_cache[cache_key] = True
+        elif cache_key in self.cancelled_fir_cache and stato != "Annullato":
+            del self.cancelled_fir_cache[cache_key]
+        for lst in (self.current_fir_list, self.filtered_fir_list):
+            for f in lst:
+                if f['codice_blocco'] == codice_blocco and str(f['progressivo']) == str(progressivo):
+                    f['stato'] = stato
+
+    def load_fir_data(self):
+        # ... (inizio come prima)
+        try:
+            blocchi = self.rest.blocchi()
+            block_values = ["Tutti i blocchi"] + [f"{b['codice_blocco']}" for b in blocchi]
+            self.block_filter.configure(values=block_values)
+            for blocco in blocchi:
+                try:
+                    formulari = self.rest.formulari(blocco['codice_blocco'])
+                    for fir in formulari:
+                        stato = self.determine_fir_status(fir, blocco['codice_blocco'])
+                        fir_data = {
+                            'numero_fir': fir.get('numero_fir', 'N/A'),
+                            'codice_blocco': blocco['codice_blocco'],
+                            'progressivo': fir.get('progressivo', 'N/A'),
+                            'data_vidimazione': fir.get('data_vidimazione', 'N/A'),
+                            'stato': stato,
+                            'selected': False,
+                            'raw_data': fir
+                        }
+                        self.current_fir_list.append(fir_data)
+                except Exception as e:
+                    print(f"Errore caricamento FIR per blocco {blocco['codice_blocco']}: {e}")
+            self.filtered_fir_list = self.current_fir_list.copy()
+            self.update_fir_display()
+            self.results_label.configure(text=f"✅ Caricati {len(self.current_fir_list)} FIR da {len(blocchi)} blocchi")
+        except Exception as e:
+            self.results_label.configure(text=f"❌ Errore caricamento: {str(e)}")
+
+    def execute_cancellation_worker(self, fir_list):
+        def annulla_worker():
+            for fir in fir_list:
+                success, status_code, response_text = self.rest.annulla_fir(
+                    fir['codice_blocco'], fir['progressivo']
+                )
+                if success:
+                    cb, pr = fir['codice_blocco'], str(fir['progressivo'])
+                    cache_key = (cb, pr)
+                    def update_cache_and_display():
+                        self.cancelled_fir_cache[cache_key] = True
+                        self._set_local_status(cb, pr, "Annullato")
+                        self.update_fir_display()
+                    self.after(0, update_cache_and_display)
+                time.sleep(0.5)
+            self.after(0, lambda: self.finalize_cancellation(...))
+        threading.Thread(target=annulla_worker, daemon=True).start()
     """View per la gestione e ricerca FIR con API annullamento funzionante"""
     def __init__(self, parent, rest_client=None):
         super().__init__(parent)
         self.rest = rest_client
         self.current_fir_list = []
         self.filtered_fir_list = []
+        self.cancelled_fir_cache = {}  # {(codice_blocco, progressivo): True}
         
         # Configure grid
         self.grid_columnconfigure(0, weight=1)
