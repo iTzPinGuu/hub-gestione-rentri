@@ -962,31 +962,50 @@ class FIRAnnullaView(ctk.CTkFrame):
         # (il resto del tuo __init__)
 
     def determine_fir_status(self, fir, codice_blocco=None):
+        """Determina lo stato corretto di un FIR"""
         if codice_blocco is None:
             codice_blocco = fir.get('codice_blocco', '')
+    
         progressivo = str(fir.get('progressivo', ''))
         cache_key = (codice_blocco, progressivo)
+    
+        # 1. PRIMA controlla se è nella cache degli annullati
         if cache_key in self.cancelled_fir_cache:
             return "Annullato"
+    
+        # 2. Controlla lo stato dall'API
         api_state = (fir.get('stato') or '').strip().lower()
         if api_state == "annullato":
             return "Annullato"
-        if fir.get('annullato') is True:
+    
+        # 3. Controlla il flag annullato
+        if fir.get('is_annullato', False) is True:
             return "Annullato"
-        if fir.get('numero_fir'):
+    
+        # 4. SOLO SE NON È ANNULLATO, controlla se è vidimato
+        # Un FIR annullato può ancora avere numero_fir, ma deve rimanere "Annullato"
+        if fir.get('numero_fir') and fir.get('numero_fir') != 'N/A':
             return "Vidimato"
-        return "Disponibile"
+    
+        # 5. Altrimenti è disponibile
+        return "Vidimato"
 
     def _set_local_status(self, codice_blocco, progressivo, stato):
+        """Aggiorna lo stato locale di un FIR"""
         cache_key = (codice_blocco, str(progressivo))
+    
         if stato == "Annullato":
             self.cancelled_fir_cache[cache_key] = True
         elif cache_key in self.cancelled_fir_cache and stato != "Annullato":
             del self.cancelled_fir_cache[cache_key]
+    
+    # Aggiorna lo stato in tutte le liste
         for lst in (self.current_fir_list, self.filtered_fir_list):
             for f in lst:
-                if f['codice_blocco'] == codice_blocco and str(f['progressivo']) == str(progressivo):
+                if (f['codice_blocco'] == codice_blocco and 
+                    str(f['progressivo']) == str(progressivo)):
                     f['stato'] = stato
+
 
     def load_fir_data(self):
         # ... (inizio come prima)
@@ -1139,7 +1158,7 @@ class FIRAnnullaView(ctk.CTkFrame):
         
         self.status_filter = ctk.CTkComboBox(
             filter_frame,
-            values=["Tutti", "Vidimato", "Disponibile", "Annullato"],
+            values=["Tutti", "Vidimato", "Annullato"],
             command=self.on_filter_change,
             width=150
         )
@@ -1293,14 +1312,7 @@ class FIRAnnullaView(ctk.CTkFrame):
             
         except Exception as e:
             self.results_label.configure(text=f"❌ Errore caricamento: {str(e)}")
-    
-    def determine_fir_status(self, fir):
-        if (fir.get('stato') or '').lower() == 'annullato' or fir.get('annullato', False) is True:
-            return "Annullato"
-        if fir.get('numero_fir'):
-            return "Vidimato"
-        return "Disponibile"
-    
+
     def on_search_change(self, event):
         """Gestisce la ricerca in tempo reale"""
         query = self.search_entry.get().lower().strip()
@@ -1421,7 +1433,6 @@ class FIRAnnullaView(ctk.CTkFrame):
         # Stato con colori
         status_colors = {
             "Vidimato": "#00b894",
-            "Disponibile": "#fdcb6e", 
             "Annullato": "#e17055"
         }
         status_color = status_colors.get(fir['stato'], "#636e72")
