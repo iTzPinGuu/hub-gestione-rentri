@@ -565,12 +565,11 @@ class ModernProgressWindow:
         self.window = ctk.CTkToplevel(parent)
         self.window.title(title)
         self.window.geometry("600x400")
-        self.window.resizable(False, False)
+        self.window.resizable(True, True)
         
         # NUOVO: Assicura che la finestra si apra in primo piano
         self.window.lift()
-        self.window.focus_force()
-        self.window.grab_set()  # Rende la finestra modale
+        self.window.focus_force()   
         
         # Centra la finestra sullo schermo
         self.window.update_idletasks()
@@ -580,9 +579,12 @@ class ModernProgressWindow:
         y = (self.window.winfo_screenheight() // 2) - (height // 2)
         self.window.geometry(f"{width}x{height}+{x}+{y}")
         
-        # Mantieni sempre in primo piano
+        # Mantieni sempre in primo piano ma permetti minimizzazione
         self.window.attributes("-topmost", True)
-        
+        try:
+            self.window.wm_attributes("-toolwindow", False)
+        except:
+            pass
         # Header
         header_frame = ctk.CTkFrame(self.window, height=80, fg_color=COLORS["primary"])
         header_frame.pack(fill="x", padx=0, pady=0)
@@ -674,9 +676,11 @@ class ModernProgressWindow:
         self.pdf_max = max_val
         
     def close(self):
-        self.window.grab_release()  # Rilascia il grab modale
         self.window.destroy()
-
+        try:
+            self.window.destroy()
+        except:
+            pass  # Gestisci eventuali errori di chiusura
 class DashboardCard:
     def __init__(self, parent, title, value, color=None):
         self.frame = ctk.CTkFrame(parent, height=120, fg_color=color or COLORS["card"])
@@ -1594,7 +1598,26 @@ class FIRAnnullaView(ctk.CTkFrame):
         details_window = ctk.CTkToplevel(self)
         details_window.title(f"Dettagli FIR {fir['numero_fir']}")
         details_window.geometry("600x500")
-        
+
+        # NUOVO: Assicura che la finestra si apra sempre in primo piano
+        details_window.lift()
+        details_window.focus_force()
+        details_window.attributes("-topmost", True)
+
+        # NUOVO: Centra la finestra
+        details_window.update_idletasks()
+        width = details_window.winfo_width()
+        height = details_window.winfo_height()
+        x = (details_window.winfo_screenwidth() // 2) - (width // 2)
+        y = (details_window.winfo_screenheight() // 2) - (height // 2)
+        details_window.geometry(f"{width}x{height}+{x}+{y}")
+
+        # NUOVO: Permetti minimizzazione
+        try:
+            details_window.wm_attributes("-toolwindow", False)
+        except:
+            pass
+
         # Title
         title_label = ctk.CTkLabel(
             details_window,
